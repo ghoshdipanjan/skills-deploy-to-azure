@@ -1,0 +1,161 @@
+name: Check Node.js Version
+description: >
+  A composite action that checks the current Node.js version and optionally
+  validates it against a required minimum or exact version.
+
+inputs:
+  node-version-file:
+    description: >
+      Path to a file (e.g. .nvmrc or .node-version) that specifies the
+      expected Node.js version. Takes precedence over 'required-version'
+      when provided.
+    required: false
+    default: ''
+  required-version:
+    description: >
+      The exact Node.js version (e.g. "20.11.0") or semver range
+      (e.g. ">=18") to validate against. Ignored when 'node-version-file'
+      is set.
+    required: false
+    default: ''
+  fail-on-mismatch:
+    description: >
+      Set to "true" to make the action fail when the installed Node.js
+      version does not satisfy the required version. Set to "false" to
+      only print a warning.
+    required: false
+    default: 'true'
+
+outputs:
+  node-version:
+    description: The Node.js version that is currently installed.
+    value: ${{ steps.get-version.outputs.node-version }}
+  npm-version:
+    description: The npm version that is currently installed.
+    value: ${{ steps.get-version.outputs.npm-version }}
+  version-matched:
+    description: >
+      "true" if the installed version satisfies the required version (or if
+      no required version was specified), "false" otherwise.
+    value: ${{ steps.validate-version.outputs.version-matched }}
+
+runs:
+  using: composite
+  steps:
+    - name: Get installed Node.js and npm versions
+      id: get-version
+      shell: bash
+      run: |
+        NODE_VERSION=$(node --version 2>/dev/null | sed 's/^v//')
+        if [[ -z "${NODE_VERSION}" ]]; then
+          echo "::error::Node.js is not installed or could not be found in PATH."
+          exit 1
+        fi
+        NPM_VERSION=$(npm --version 2>/dev/null || echo "not installed")
+
+        echo "node-version=${NODE_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "npm-version=${NPM_VERSION}"   >> "$GITHUB_OUTPUT"
+
+        echo "### Node.js version check" >> "$GITHUB_STEP_SUMMARY"
+        echo ""                          >> "$GITHUB_STEP_SUMMARY"
+        echo "| Tool | Version |"        >> "$GITHUB_STEP_SUMMARY"
+        echo "| ---- | ------- |"        >> "$GITHUB_STEP_SUMMARY"
+        echo "| Node.js | \`${NODE_VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| npm     | \`${NPM_VERSION}\` |"  >> "$GITHUB_STEP_SUMMARY"
+
+        echo "Installed Node.js: v${NODE_VERSION}"
+        echo "Installed npm:     ${NPM_VERSION}"
+
+    - name: Resolve required version
+      id: resolve-required
+      shell: bash
+      run: |
+        NODE_VERSION_FILE="${{ inputs.node-version-file }}"
+        REQUIRED_VERSION="${{ inputs.required-version }}"
+
+        if [[ -n "${NODE_VERSION_FILE}" ]]; then
+          if [[ ! -f "${NODE_VERSION_FILE}" ]]; then
+            echo "::error::node-version-file '${NODE_VERSION_FILE}' not found."
+            exit 1
+          fi
+          REQUIRED_VERSION=$(cat "${NODE_VERSION_FILE}" | tr -d '[:space:]' | sed 's/^v//')
+          echo "Required version read from '${NODE_VERSION_FILE}': ${REQUIRED_VERSION}"
+        fi
+
+        echo "required-version=${REQUIRED_VERSION}" >> "$GITHUB_OUTPUT"
+
+    - name: Validate Node.js version
+      id: validate-version
+      shell: bash
+      run: |
+        INSTALLED="${{ steps.get-version.outputs.node-version }}"
+        REQUIRED="${{ steps.resolve-required.outputs.required-version }}"
+        FAIL_ON_MISMATCH="${{ inputs.fail-on-mismatch }}"
+
+        if [[ -z "${REQUIRED}" ]]; then
+          echo "No required version specified — skipping version check."
+          echo "version-matched=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Use node itself to compare versions so we get proper semver semantics.
+        MATCHED=$(node -e "
+          const semver = (v) => {
+            if (!v || typeof v !== 'string') return [0, 0, 0];
+            const clean = v.replace(/^[^0-9]*/, '');
+            if (!clean) return [0, 0, 0];
+            return clean.split('.').map(n => { const x = parseInt(n, 10); return isNaN(x) ? 0 : x; });
+          };
+          const cmp = (a, b) => {
+            for (let i = 0; i < 3; i++) {
+              if ((a[i]||0) !== (b[i]||0)) return (a[i]||0) - (b[i]||0);
+            }
+            return 0;
+          };
+          const installed = semver('${INSTALLED}');
+          const required  = '${REQUIRED}';
+
+          if (!required) { process.stdout.write('true'); process.exit(0); }
+
+          // Handle range operators: >=, >, <=, <, ^ (compatible), ~ (patch)
+          let matched = false;
+          if (/^>=/.test(required)) {
+            matched = cmp(installed, semver(required.slice(2))) >= 0;
+          } else if (/^>/.test(required)) {
+            matched = cmp(installed, semver(required.slice(1))) > 0;
+          } else if (/^<=/.test(required)) {
+            matched = cmp(installed, semver(required.slice(2))) <= 0;
+          } else if (/^</.test(required)) {
+            matched = cmp(installed, semver(required.slice(1))) < 0;
+          } else if (/^\^/.test(required)) {
+            const req = semver(required.slice(1));
+            matched = cmp(installed, req) >= 0 && installed[0] === req[0];
+          } else if (/^~/.test(required)) {
+            const req = semver(required.slice(1));
+            matched = cmp(installed, req) >= 0 && installed[0] === req[0] && installed[1] === req[1];
+          } else {
+            // Exact match (ignoring patch if only major.minor supplied)
+            const req = semver(required);
+            const parts = required.replace(/^[^0-9]*/, '').split('.');
+            const depth = parts.length > 0 ? parts.length : 1;
+            matched = installed.slice(0, depth).join('.') === req.slice(0, depth).join('.');
+          }
+          process.stdout.write(matched ? 'true' : 'false');
+        ")
+
+        echo "version-matched=${MATCHED}" >> "$GITHUB_OUTPUT"
+        echo ""                           >> "$GITHUB_STEP_SUMMARY"
+
+        if [[ "${MATCHED}" == "true" ]]; then
+          echo "✅ Node.js v${INSTALLED} satisfies required version '${REQUIRED}'."
+          echo "**✅ Node.js v${INSTALLED}** satisfies required version \`${REQUIRED}\`." >> "$GITHUB_STEP_SUMMARY"
+        else
+          MSG="Node.js v${INSTALLED} does NOT satisfy required version '${REQUIRED}'."
+          echo "**❌ Node.js v${INSTALLED}** does NOT satisfy required version \`${REQUIRED}\`." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${FAIL_ON_MISMATCH}" == "true" ]]; then
+            echo "::error::${MSG}"
+            exit 1
+          else
+            echo "::warning::${MSG}"
+          fi
+        fi

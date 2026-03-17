@@ -9,3 +9,25 @@ jobs:
     runs-on: ubuntu-latest
 
     if: contains(github.event.pull_request.labels.*.name, 'stage')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check Node.js version
+        id: node-check
+        uses: ./.github/actions/check-node-version
+        with:
+          required-version: '>=20'
+          fail-on-mismatch: 'true'
+
+      - name: Print version info
+        run: |
+          echo "Node.js version : ${{ steps.node-check.outputs.node-version }}"
+          echo "npm version     : ${{ steps.node-check.outputs.npm-version }}"
+          echo "Version matched : ${{ steps.node-check.outputs.version-matched }}"
