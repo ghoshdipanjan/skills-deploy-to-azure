@@ -1,8 +1,11 @@
 {
-  "name": "actions-template",
+  "name": "@ghoshdipanjan/actions-template",
   "version": "1.0.0",
   "description": "Learn how to use GitHub Actions!",
   "main": "index.js",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "directories": {
     "test": "__test__",
     "src": "src"
