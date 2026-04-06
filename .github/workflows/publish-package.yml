@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      - copilot/publish-nuget-package
+  workflow_dispatch:
 
 jobs:
   publish:
